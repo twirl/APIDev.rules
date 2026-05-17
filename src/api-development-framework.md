@@ -1,7 +1,3 @@
-# API Development Framework
-
-Source scope: general-purpose API development rules distilled from [The API Book: 3rd Edition](https://github.com/twirl/The-API-Book) by Sergey Konstantinov.
-
 ## Questions to Clarify Before Designing the API
 
 - Audience and authorization: who will use the API, on whose behalf it acts, and what authentication and authorization model is required.

@@ -1,0 +1,9 @@
+{
+    "name": "apidev-rules",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Build tooling for assembling AGENTS.md from source rule files",
+    "scripts": {
+        "build": "node src/build.mjs"
+    }
+}

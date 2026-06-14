@@ -5,5 +5,8 @@
     "description": "Build tooling for assembling AGENTS.md from source rule files",
     "scripts": {
         "build": "node src/build.mjs"
+    },
+    "dependencies": {
+        "archiver": "^7.0.0"
     }
 }

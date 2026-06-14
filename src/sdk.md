@@ -14,7 +14,7 @@ For example, expose a timestamp as `Date`, `Instant`, or the platform's equivale
 
 - Represent relationships as references or lazy objects where that reduces repeated lookup code.
 
-For example, let an `Offer` expose list of related `Product` object instead of forcing every app to map `offer.product_ids` to a separately fetched product list.
+For example, let an `Offer` expose a list of related `Product` objects instead of forcing every app to map `offer.product_ids` to a separately fetched product list.
 
 - Initialize related entities when that is part of the developer's task, but make network, cache, and latency behavior explicit enough to reason about.
 - Implement documented retry policy for safe requests. Respect server retry hints such as `Retry-After`, use backoff, and never retry unsafe operations unless idempotency is guaranteed.

@@ -15,7 +15,7 @@
 - Do not make sibling components call each other directly when either may be replaced. Route coordination through a parent context, composer, controller, or presenter.
 - Use events or explicit state changes for weak coupling, but avoid unstructured event chains that can loop or leak low-level concepts upward.
 
-Example: there is an ongoing search operation, and the user types new query in the input, this disrupting it. Component responsible for handling input should emit an event about changed query for parent form to catch and propagate to other components if needed instead of directly working with sibling components (stop pinners, enable buttons, etc.)
+Example: if there is an ongoing search operation and the user types a new query, the input component should emit a "query changed" event for the parent form to catch and propagate. It should not directly control sibling components, such as stopping pins or enabling buttons.
 
 - Introduce an intermediate abstraction when a high-level component cannot coordinate subcomponents without knowing their implementation details.
 - Let the intermediate layer prepare data facets, translate options, manage component-local state, and map low-level user actions to high-level operations.

@@ -88,15 +88,15 @@ Problem: when a new feature appears, such as contactless robot delivery, the sha
 ```ts
 interface CustomDeliveryService {
   registerOrder(orderAccessor: OrderAccessor);
-  optional isRobotDelivery(orderId);
-  optional getCourierName(orderId);
-  optional getConfirmationCode(orderId);
+  isRobotDelivery?(orderId);
+  getCourierName?(orderId);
+  getConfirmationCode?(orderId);
 }
 interface OrderAccessor {
   id: OrderId;
   confirmOrder();
   cancelOrder();
-  optional notifyUserToPickUp();
+  notifyUserToPickUp?();
 }
 ```
 
@@ -106,11 +106,11 @@ Weak coupling:
 
 ```ts
 interface CustomDeliveryService {
-  public registerOrder(orderAccessor)
+  registerOrder(orderAccessor);
   // Instead of locking the contract to "courier",
   // use generalized terms from the product domain.
-  public getDeliveryCarrierData(order) => DeliveryCarrierData
-  public subscribe(order, event, callback)
+  getDeliveryCarrierData(order): DeliveryCarrierData;
+  subscribe(order, event, callback);
   // Events might be 'confirm', 'cancel', 'user_needs_to_pick_up', etc.
 }
 interface OrderAccessor {

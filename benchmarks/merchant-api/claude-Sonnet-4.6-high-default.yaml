@@ -1,0 +1,657 @@
+openapi: 3.1.0
+
+info:
+  title: Merchant Integration API
+  version: 1.0.0
+  description: >
+    REST API for merchants to integrate with the retail and delivery platform.
+    Merchants can manage their product catalog, handle incoming orders,
+    confirm or reject them with readiness estimates, and signal when an
+    order is ready for pickup or dispatch.
+
+servers:
+  - url: https://api.platform.example/v1
+    description: Production
+
+security:
+  - bearerAuth: []
+
+# ─────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────
+paths:
+
+  # ── CATALOG ──────────────────────────────────
+
+  /merchants/{merchantId}/catalog:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+
+    get:
+      operationId: getCatalog
+      summary: Retrieve the merchant's current catalog
+      tags: [Catalog]
+      responses:
+        '200':
+          description: Current catalog
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Catalog'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      operationId: replaceCatalog
+      summary: Replace the entire catalog (full upload)
+      tags: [Catalog]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogInput'
+      responses:
+        '200':
+          description: Catalog replaced successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Catalog'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /merchants/{merchantId}/catalog/items:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+
+    post:
+      operationId: addCatalogItem
+      summary: Add a single item to the catalog
+      tags: [Catalog]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogItemInput'
+      responses:
+        '201':
+          description: Item created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogItem'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /merchants/{merchantId}/catalog/items/{itemId}:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+      - $ref: '#/components/parameters/itemId'
+
+    patch:
+      operationId: updateCatalogItem
+      summary: Update price or availability of a single item
+      tags: [Catalog]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogItemPatch'
+      responses:
+        '200':
+          description: Item updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogItem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: deleteCatalogItem
+      summary: Remove an item from the catalog
+      tags: [Catalog]
+      responses:
+        '204':
+          description: Item deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── ORDERS ────────────────────────────────────
+
+  /merchants/{merchantId}/orders:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+
+    get:
+      operationId: listOrders
+      summary: List orders directed to this merchant
+      tags: [Orders]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/OrderStatus'
+          description: Filter by order status
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Return orders placed on or after this timestamp (ISO 8601)
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Return orders placed on or before this timestamp (ISO 8601)
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated list of orders
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderPage'
+
+  /merchants/{merchantId}/orders/{orderId}:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+      - $ref: '#/components/parameters/orderId'
+
+    get:
+      operationId: getOrder
+      summary: Retrieve full details of a specific order
+      tags: [Orders]
+      responses:
+        '200':
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /merchants/{merchantId}/orders/{orderId}/confirmation:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+      - $ref: '#/components/parameters/orderId'
+
+    post:
+      operationId: confirmOrder
+      summary: Confirm an incoming order and provide a readiness estimate
+      tags: [Orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderConfirmation'
+      responses:
+        '200':
+          description: Order confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /merchants/{merchantId}/orders/{orderId}/rejection:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+      - $ref: '#/components/parameters/orderId'
+
+    post:
+      operationId: rejectOrder
+      summary: Reject an incoming order
+      tags: [Orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderRejection'
+      responses:
+        '200':
+          description: Order rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /merchants/{merchantId}/orders/{orderId}/ready:
+    parameters:
+      - $ref: '#/components/parameters/merchantId'
+      - $ref: '#/components/parameters/orderId'
+
+    post:
+      operationId: markOrderReady
+      summary: Notify the platform that the order is ready for pickup / dispatch
+      tags: [Orders]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderReadyNotification'
+      responses:
+        '200':
+          description: Platform notified; order status updated to ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+# ─────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────
+components:
+
+  # ── SECURITY ──────────────────────────────────
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Short-lived JWT issued by the platform's auth service.
+        Include as: Authorization: Bearer <token>
+
+  # ── PARAMETERS ────────────────────────────────
+  parameters:
+    merchantId:
+      name: merchantId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of the merchant
+
+    itemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of a catalog item
+
+    orderId:
+      name: orderId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Unique identifier of an order
+
+  # ── SCHEMAS ───────────────────────────────────
+  schemas:
+
+    # — Catalog —————————————————————————————————
+
+    Catalog:
+      type: object
+      properties:
+        merchantId:
+          type: string
+          format: uuid
+        updatedAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogItem'
+
+    CatalogInput:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CatalogItemInput'
+
+    CatalogItemInput:
+      type: object
+      required: [sku, name, price, currency]
+      properties:
+        sku:
+          type: string
+          description: Merchant-assigned stock-keeping unit
+          example: PIZZA-MARG-L
+        name:
+          type: string
+          example: Margherita Pizza (Large)
+        description:
+          type: string
+        imageUrl:
+          type: string
+          format: uri
+        category:
+          type: string
+          example: Pizza
+        price:
+          type: number
+          format: double
+          minimum: 0
+          example: 12.99
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          example: EUR
+        available:
+          type: boolean
+          default: true
+        preparationTimeMinutes:
+          type: integer
+          minimum: 0
+          description: Typical time to prepare this item, in minutes
+          example: 20
+
+    CatalogItem:
+      allOf:
+        - $ref: '#/components/schemas/CatalogItemInput'
+        - type: object
+          properties:
+            itemId:
+              type: string
+              format: uuid
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+
+    CatalogItemPatch:
+      type: object
+      description: All fields are optional; only supplied fields are updated
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        imageUrl:
+          type: string
+          format: uri
+        category:
+          type: string
+        price:
+          type: number
+          format: double
+          minimum: 0
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        available:
+          type: boolean
+        preparationTimeMinutes:
+          type: integer
+          minimum: 0
+
+    # — Orders ——————————————————————————————————
+
+    OrderStatus:
+      type: string
+      enum:
+        - pending       # Received by platform, awaiting merchant action
+        - confirmed     # Merchant accepted; readiness ETA provided
+        - rejected      # Merchant declined
+        - ready         # Merchant has signalled the order is ready
+        - picked_up     # Delivery partner collected the order
+        - delivered     # Order delivered to customer
+        - cancelled     # Cancelled after confirmation (by platform or customer)
+
+    Order:
+      type: object
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        merchantId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        placedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        estimatedReadyAt:
+          type: string
+          format: date-time
+          description: Set by merchant upon confirmation
+          nullable: true
+        customer:
+          $ref: '#/components/schemas/CustomerSummary'
+        deliveryAddress:
+          $ref: '#/components/schemas/Address'
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderLine'
+        subtotal:
+          type: number
+          format: double
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        specialInstructions:
+          type: string
+          nullable: true
+
+    OrderLine:
+      type: object
+      properties:
+        lineId:
+          type: string
+          format: uuid
+        itemId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unitPrice:
+          type: number
+          format: double
+        lineTotal:
+          type: number
+          format: double
+        notes:
+          type: string
+          nullable: true
+
+    OrderPage:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    OrderConfirmation:
+      type: object
+      required: [estimatedReadyAt]
+      properties:
+        estimatedReadyAt:
+          type: string
+          format: date-time
+          description: Merchant's best estimate of when the order will be ready
+          example: '2025-06-13T14:35:00Z'
+        note:
+          type: string
+          description: Optional message to pass to the customer or dispatcher
+          example: Running 5 minutes late due to high volume
+
+    OrderRejection:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          enum:
+            - item_unavailable
+            - store_closed
+            - too_busy
+            - order_too_large
+            - other
+        note:
+          type: string
+          description: Free-text detail, required when reason is "other"
+          example: We are closing early today due to a staff emergency
+
+    OrderReadyNotification:
+      type: object
+      properties:
+        note:
+          type: string
+          description: Optional message for the dispatcher or delivery partner
+          example: Order is bagged and waiting at the front counter
+
+    # — Shared ——————————————————————————————————
+
+    CustomerSummary:
+      type: object
+      properties:
+        customerId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        phone:
+          type: string
+          description: Provided only when merchant needs to contact the customer
+
+    Address:
+      type: object
+      required: [line1, city, country]
+      properties:
+        line1:
+          type: string
+        line2:
+          type: string
+          nullable: true
+        city:
+          type: string
+        postalCode:
+          type: string
+        country:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          description: ISO 3166-1 alpha-2 country code
+        coordinates:
+          type: object
+          properties:
+            lat:
+              type: number
+              format: double
+            lng:
+              type: number
+              format: double
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        totalItems:
+          type: integer
+        totalPages:
+          type: integer
+
+    # — Errors ———————————————————————————————————
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: ORDER_ALREADY_CONFIRMED
+        message:
+          type: string
+          example: This order has already been confirmed and cannot be modified.
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              issue:
+                type: string
+
+  # ── RESPONSES ─────────────────────────────────
+  responses:
+    NotFound:
+      description: The requested resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Conflict:
+      description: >
+        The action conflicts with the current state of the resource
+        (e.g. confirming an already-rejected order)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    UnprocessableEntity:
+      description: Request payload failed validation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+# ─────────────────────────────────────────────
+# TAGS
+# ─────────────────────────────────────────────
+tags:
+  - name: Catalog
+    description: Manage the merchant's product catalog
+  - name: Orders
+    description: Receive, action, and update the status of customer orders

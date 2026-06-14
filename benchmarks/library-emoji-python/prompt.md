@@ -1,0 +1,1 @@
+Design a Python library to work with emojis. Propose the use cases and functionality. Prepare the design draft in the form of an abstract class (or classes), don't jump to the implementation. Add documentation.

@@ -1,0 +1,1243 @@
+openapi: "3.1.0"
+
+info:
+  title: Merchant Gateway API
+  version: "1"
+  description: >
+    REST/HTTP API for merchants connecting to the retail and delivery platform.
+    All requests must be made over TLS 1.2 or newer.
+    Timestamps are ISO 8601 / RFC 3339 in UTC.
+    Money amounts are decimal strings; currency codes are ISO 4217.
+    Identifiers use the format "<type>:<uuid4>" (e.g. "merchant:8d9a0c70-…").
+
+servers:
+  - url: https://api.platform.example/v1
+    description: Production
+
+# ──────────────────────────────────────────────
+# SECURITY
+# ──────────────────────────────────────────────
+security:
+  - merchantApiKey: []
+
+components:
+  securitySchemes:
+    merchantApiKey:
+      type: http
+      scheme: bearer
+      description: >
+        Bearer token issued during merchant onboarding.
+        Scope is restricted to the authenticated merchant's own resources.
+
+  # ──────────────────────────────────────────────
+  # COMMON HEADERS (referenced inline where needed)
+  # ──────────────────────────────────────────────
+  headers:
+    X-Platform-Request-Id:
+      description: Globally unique request identifier for tracing and support.
+      schema:
+        type: string
+        example: req_7f3a2b19c4d8e0f1
+    X-Platform-Error-Kind:
+      description: Machine-readable error sub-type for monitoring and client branching.
+      schema:
+        type: string
+        example: order_already_confirmed
+    Retry-After:
+      description: Seconds the client should wait before retrying (rate-limit and 503).
+      schema:
+        type: integer
+        example: 60
+
+  # ──────────────────────────────────────────────
+  # SCHEMAS
+  # ──────────────────────────────────────────────
+  schemas:
+
+    # ── Error envelope ────────────────────────────
+    Error:
+      type: object
+      required: [reason, localized_message]
+      properties:
+        reason:
+          type: string
+          description: >
+            Machine-readable error kind. Matches X-Platform-Error-Kind header.
+          example: validation_failed
+        localized_message:
+          type: string
+          description: Safe, human-readable message suitable for display to merchant staff.
+          example: One or more fields failed validation.
+        retryable:
+          type: boolean
+          description: >
+            true if an identical retry may succeed (e.g. transient server error).
+            Absent means unknown; clients should treat it as false.
+        retry_after_ms:
+          type: integer
+          description: Minimum milliseconds to wait before retrying. Present only when retryable is true.
+          example: 2000
+        violations:
+          type: array
+          description: Per-field validation errors. Present when reason is validation_failed.
+          items:
+            $ref: "#/components/schemas/FieldViolation"
+        details:
+          type: object
+          description: Diagnostic bag for developers and logs. Not for end-user display.
+          additionalProperties: true
+
+    FieldViolation:
+      type: object
+      required: [field, reason]
+      properties:
+        field:
+          type: string
+          example: items[2].price_minor_units
+        reason:
+          type: string
+          example: must_be_positive
+        message:
+          type: string
+          example: "items[2].price_minor_units must be greater than 0"
+
+    # ── Pagination cursor ─────────────────────────
+    CursorPage:
+      type: object
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for the next page. null when no further pages exist.
+          example: eyJwYWdlIjoyfQ
+
+    # ── Money ─────────────────────────────────────
+    Money:
+      type: object
+      required: [amount, currency_code]
+      properties:
+        amount:
+          type: string
+          description: >
+            Decimal string representation of the amount, e.g. "12.50".
+            Use string to preserve fixed-point precision.
+          pattern: '^\d+(\.\d{1,4})?$'
+          example: "12.50"
+        currency_code:
+          type: string
+          description: ISO 4217 currency code.
+          example: EUR
+
+    # ── Catalog ───────────────────────────────────
+    CatalogItem:
+      type: object
+      required: [merchant_item_id, name, price, is_available]
+      properties:
+        merchant_item_id:
+          type: string
+          maxLength: 128
+          description: >
+            Stable identifier assigned by the merchant's own system.
+            Used to correlate platform items with the merchant's back-end.
+          example: SKU-0042
+        name:
+          type: string
+          maxLength: 200
+          example: Margherita Pizza (32 cm)
+        description:
+          type: string
+          maxLength: 2000
+          example: Classic tomato sauce, mozzarella, fresh basil.
+        image_url:
+          type: string
+          format: uri
+          description: >
+            URL to a publicly accessible product image.
+            Heavy binary is hosted externally; only a reference is stored here.
+          example: https://cdn.merchant.example/images/margherita.jpg
+        price:
+          $ref: "#/components/schemas/Money"
+        category:
+          type: string
+          maxLength: 80
+          description: Merchant-defined category label for grouping in the storefront.
+          example: Pizzas
+        is_available:
+          type: boolean
+          description: false hides the item from the consumer storefront immediately.
+          default: true
+        preparation_time_estimate_seconds:
+          type: integer
+          minimum: 0
+          description: >
+            Typical time to prepare this item, in seconds.
+            Used by the platform for order scheduling.
+          example: 900
+
+    CatalogUploadRequest:
+      type: object
+      required: [idempotency_token, items]
+      properties:
+        idempotency_token:
+          type: string
+          maxLength: 128
+          description: >
+            Client-generated token that makes this upload idempotent.
+            A second request with the same token and identical body returns
+            the original response without re-processing. A second request
+            with the same token but a different body returns 409.
+          example: catalog-upload-2026-06-13-v3
+        replace_entire_catalog:
+          type: boolean
+          default: false
+          description: >
+            When true, all items not present in this request are deactivated
+            (is_available set to false). When false, only the supplied items
+            are created or updated.
+        items:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+
+    CatalogUploadResponse:
+      type: object
+      required: [upload_id, status, created_count, updated_count, deactivated_count]
+      properties:
+        upload_id:
+          type: string
+          description: Platform-assigned identifier for this catalog upload operation.
+          example: "catalog-upload:3f7a2b19-c4d8-e0f1-a2b3-c4d5e6f70001"
+        status:
+          type: string
+          enum: [accepted, processing, completed, failed]
+          description: >
+            accepted  – received and queued.
+            processing – ingestion in progress.
+            completed  – all items applied to the storefront.
+            failed     – ingestion failed; inspect errors field.
+        created_count:
+          type: integer
+          description: Number of new items added.
+        updated_count:
+          type: integer
+          description: Number of existing items updated.
+        deactivated_count:
+          type: integer
+          description: >
+            Number of items deactivated because replace_entire_catalog was true
+            and they were absent from this upload.
+        errors:
+          type: array
+          description: Per-item errors. Present when status is failed or partially failed.
+          items:
+            type: object
+            required: [merchant_item_id, reason]
+            properties:
+              merchant_item_id:
+                type: string
+              reason:
+                type: string
+              message:
+                type: string
+
+    # ── Orders ────────────────────────────────────
+    OrderItem:
+      type: object
+      required: [merchant_item_id, name, quantity, unit_price]
+      properties:
+        order_item_id:
+          type: string
+          description: Platform-assigned ID for this line item.
+          example: "order-item:aabbcc11-0000-0000-0000-000000000001"
+        merchant_item_id:
+          type: string
+          description: Merchant's own SKU or item reference.
+          example: SKU-0042
+        name:
+          type: string
+          description: Item name at the time the order was placed (snapshot).
+        quantity:
+          type: integer
+          minimum: 1
+        unit_price:
+          $ref: "#/components/schemas/Money"
+        special_instructions:
+          type: string
+          maxLength: 500
+          nullable: true
+
+    Order:
+      type: object
+      required:
+        - order_id
+        - merchant_id
+        - status
+        - items
+        - total_price
+        - placed_at
+      properties:
+        order_id:
+          type: string
+          example: "order:8d9a0c70-63f0-46a8-9f2b-6ccf6e9f2ef7"
+        merchant_id:
+          type: string
+          example: "merchant:c1d2e3f4-0000-0000-0000-000000000001"
+        status:
+          type: string
+          enum:
+            - pending_merchant_confirmation
+            - confirmed
+            - rejected
+            - in_preparation
+            - ready_for_pickup
+            - picked_up
+            - delivered
+            - cancelled
+          description: |
+            Lifecycle states:
+              pending_merchant_confirmation – awaiting merchant action
+              confirmed                    – merchant accepted, preparing
+              rejected                     – merchant rejected
+              in_preparation               – merchant marked as started
+              ready_for_pickup             – merchant marked as ready
+              picked_up                    – platform courier collected
+              delivered                    – delivered to customer
+              cancelled                    – cancelled by platform or customer
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        total_price:
+          $ref: "#/components/schemas/Money"
+        placed_at:
+          type: string
+          format: date-time
+          description: UTC timestamp when the consumer placed the order.
+        customer_note:
+          type: string
+          nullable: true
+          maxLength: 500
+        requested_delivery_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Consumer's requested delivery time, if supplied.
+            null means "as soon as possible".
+        estimated_ready_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Merchant's latest estimate for when the order will be ready.
+            Updated by the merchant via the confirm or ready actions.
+        rejection_reason:
+          type: string
+          nullable: true
+          description: Present when status is rejected.
+        etag:
+          type: string
+          description: >
+            Opaque concurrency token. Must be supplied as If-Match in state-change
+            requests to prevent lost-update races.
+          example: '"order-rev-7"'
+
+    # ── Order action request bodies ───────────────
+    ConfirmOrderRequest:
+      type: object
+      required: [estimated_ready_at]
+      properties:
+        estimated_ready_at:
+          type: string
+          format: date-time
+          description: >
+            UTC timestamp by which the order will be ready for courier pickup.
+            Must be in the future at the time of the request.
+          example: "2026-06-13T14:30:00Z"
+
+    RejectOrderRequest:
+      type: object
+      required: [rejection_reason]
+      properties:
+        rejection_reason:
+          type: string
+          enum:
+            - item_unavailable
+            - store_closing
+            - too_busy
+            - customer_requested
+            - other
+          description: Machine-readable reason code shown in merchant analytics.
+        rejection_note:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Optional free-text note for platform operations logs.
+
+    MarkOrderReadyRequest:
+      type: object
+      properties:
+        updated_estimated_ready_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Revised ready time if the merchant wants to correct the earlier estimate.
+            Omit or null to keep the existing estimate.
+
+    # ── Webhook registration ──────────────────────
+    WebhookSubscription:
+      type: object
+      required: [subscription_id, target_url, events, is_active, created_at]
+      properties:
+        subscription_id:
+          type: string
+          example: "webhook-sub:aabb1122-0000-0000-0000-000000000001"
+        target_url:
+          type: string
+          format: uri
+          example: https://merchant.example/platform-webhooks
+        events:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum:
+              - order.placed
+              - order.cancelled
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        signing_secret_hint:
+          type: string
+          description: >
+            Last 4 characters of the HMAC-SHA256 signing secret so merchants can
+            confirm which secret is active without exposing it. Full secret is
+            delivered only at subscription creation.
+          example: "a3f9"
+
+    CreateWebhookSubscriptionRequest:
+      type: object
+      required: [target_url, events]
+      properties:
+        target_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: HTTPS endpoint the platform will POST events to.
+          example: https://merchant.example/platform-webhooks
+        events:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum:
+              - order.placed
+              - order.cancelled
+
+    CreateWebhookSubscriptionResponse:
+      allOf:
+        - $ref: "#/components/schemas/WebhookSubscription"
+        - type: object
+          required: [signing_secret]
+          properties:
+            signing_secret:
+              type: string
+              description: >
+                Full HMAC-SHA256 signing secret. Shown exactly once at creation;
+                store it securely. Rotate via POST /webhook-subscriptions/{id}/rotate-secret.
+              example: whsec_8d9a0c7063f046a89f2b6ccf6e9f2ef7
+
+  # ── Reusable parameters ──────────────────────
+  parameters:
+    MerchantId:
+      name: merchant_id
+      in: path
+      required: true
+      description: The authenticated merchant's platform identifier.
+      schema:
+        type: string
+      example: "merchant:c1d2e3f4-0000-0000-0000-000000000001"
+
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: "order:8d9a0c70-63f0-46a8-9f2b-6ccf6e9f2ef7"
+
+    SubscriptionId:
+      name: subscription_id
+      in: path
+      required: true
+      schema:
+        type: string
+
+    LimitParam:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Maximum number of items to return in one page.
+
+    CursorParam:
+      name: cursor
+      in: query
+      schema:
+        type: string
+      description: Opaque pagination cursor from a previous response's next_cursor field.
+
+    IfMatchHeader:
+      name: If-Match
+      in: header
+      required: true
+      description: >
+        ETag of the resource version the client last read.
+        Prevents lost-update races; return 412 when the tag does not match.
+      schema:
+        type: string
+      example: '"order-rev-7"'
+
+  # ── Reusable responses ───────────────────────
+  responses:
+    BadRequest:
+      description: The request body or parameters are invalid.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+        X-Platform-Error-Kind:
+          $ref: "#/components/headers/X-Platform-Error-Kind"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            reason: validation_failed
+            localized_message: One or more fields failed validation.
+            violations:
+              - field: estimated_ready_at
+                reason: must_be_future_timestamp
+
+    Unauthorized:
+      description: Missing or invalid authentication token.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            reason: invalid_token
+            localized_message: Authentication failed. Check your API key.
+
+    Forbidden:
+      description: The caller does not have access to this resource.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            reason: access_denied
+            localized_message: You do not have permission to access this resource.
+
+    NotFound:
+      description: The requested resource does not exist.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            reason: not_found
+            localized_message: The requested resource was not found.
+
+    Conflict:
+      description: State conflict or idempotency token collision.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+        X-Platform-Error-Kind:
+          $ref: "#/components/headers/X-Platform-Error-Kind"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    PreconditionFailed:
+      description: >
+        If-Match header did not match the current resource ETag.
+        The client must re-fetch the resource and retry with the new ETag.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            reason: etag_mismatch
+            localized_message: The order was modified by another request. Please refresh and try again.
+            retryable: true
+
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+        Retry-After:
+          $ref: "#/components/headers/Retry-After"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            reason: rate_limit_exceeded
+            localized_message: Too many requests. Please wait before trying again.
+            retryable: true
+            retry_after_ms: 60000
+            retry_policy: exponential_backoff
+
+    ServerError:
+      description: Unexpected server-side error.
+      headers:
+        X-Platform-Request-Id:
+          $ref: "#/components/headers/X-Platform-Request-Id"
+        X-Platform-Error-Kind:
+          $ref: "#/components/headers/X-Platform-Error-Kind"
+        Retry-After:
+          $ref: "#/components/headers/Retry-After"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            reason: internal_server_error
+            localized_message: Something went wrong on our end. Please try again shortly.
+            retryable: true
+            retry_after_ms: 5000
+            retry_policy: exponential_backoff
+
+# ──────────────────────────────────────────────
+# PATHS
+# ──────────────────────────────────────────────
+paths:
+
+  # ════════════════════════════════════════════
+  # CATALOG
+  # ════════════════════════════════════════════
+
+  /merchants/{merchant_id}/catalog/uploads:
+    post:
+      operationId: uploadCatalog
+      summary: Upload or update the merchant's item catalog
+      description: >
+        Accepts a full or partial catalog upload.
+        Ingestion is asynchronous; poll the returned upload_id via
+        GET /merchants/{merchant_id}/catalog/uploads/{upload_id} to track progress.
+
+        Idempotency: supply a stable idempotency_token per logical upload
+        attempt. Retrying with the same token is safe.
+      tags: [Catalog]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CatalogUploadRequest"
+      responses:
+        "202":
+          description: Upload accepted for asynchronous processing.
+          headers:
+            Location:
+              description: URL to poll for upload status.
+              schema:
+                type: string
+              example: /v1/merchants/merchant:c1d2e3f4/catalog/uploads/catalog-upload:3f7a2b19
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /merchants/{merchant_id}/catalog/uploads/{upload_id}:
+    get:
+      operationId: getCatalogUploadStatus
+      summary: Retrieve the status of a catalog upload
+      description: >
+        Poll this endpoint after a catalog upload to track ingestion progress.
+        Recommended polling interval: 5 seconds with exponential back-off.
+        The response is cacheable for a short duration indicated by Cache-Control.
+      tags: [Catalog]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - name: upload_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Upload status returned.
+          headers:
+            Cache-Control:
+              description: >
+                Clients may cache this response for the stated duration.
+                Terminal states (completed, failed) are cacheable longer.
+              schema:
+                type: string
+              example: max-age=5
+            ETag:
+              schema:
+                type: string
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogUploadResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  # ════════════════════════════════════════════
+  # ORDERS — LIST & READ
+  # ════════════════════════════════════════════
+
+  /merchants/{merchant_id}/orders:
+    get:
+      operationId: listOrders
+      summary: List orders for the merchant
+      description: >
+        Returns a paginated list of orders, newest first.
+        Filter by status to build a queue view (e.g. pending_merchant_confirmation).
+        Combine with webhook subscriptions to avoid polling for new orders.
+      tags: [Orders]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - pending_merchant_confirmation
+              - confirmed
+              - rejected
+              - in_preparation
+              - ready_for_pickup
+              - picked_up
+              - delivered
+              - cancelled
+          description: Filter orders by lifecycle status. Omit to return all statuses.
+        - name: placed_after
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Return only orders placed at or after this UTC timestamp.
+        - name: placed_before
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Return only orders placed before this UTC timestamp.
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/CursorParam"
+      responses:
+        "200":
+          description: Paginated list of orders.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-store
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    required: [orders]
+                    properties:
+                      orders:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /merchants/{merchant_id}/orders/{order_id}:
+    get:
+      operationId: getOrder
+      summary: Retrieve a single order
+      tags: [Orders]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          description: Order retrieved.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-store
+            ETag:
+              description: >
+                Current concurrency token. Supply as If-Match in subsequent
+                confirm, reject, or ready requests.
+              schema:
+                type: string
+              example: '"order-rev-7"'
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  # ════════════════════════════════════════════
+  # ORDERS — STATE TRANSITIONS
+  # Each transition is a dedicated sub-resource so the intent is unambiguous,
+  # the operation is naturally idempotent at the HTTP level (PUT), and
+  # the ETag check prevents lost-update races.
+  # ════════════════════════════════════════════
+
+  /merchants/{merchant_id}/orders/{order_id}/confirmation:
+    put:
+      operationId: confirmOrder
+      summary: Confirm an incoming order and provide a readiness estimate
+      description: >
+        Accepts an order that is in the pending_merchant_confirmation state
+        and transitions it to confirmed.
+
+        The merchant must supply estimated_ready_at so the platform can
+        schedule a courier.
+
+        Idempotency: PUT is idempotent. Re-sending with the same ETag and body
+        returns 200 without side effects if the order is already confirmed.
+        Use the ETag from GET /orders/{order_id} as the If-Match value.
+
+        Allowed only when current status is pending_merchant_confirmation.
+      tags: [Orders]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - $ref: "#/components/parameters/OrderId"
+        - $ref: "#/components/parameters/IfMatchHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmOrderRequest"
+            example:
+              estimated_ready_at: "2026-06-13T14:30:00Z"
+      responses:
+        "200":
+          description: Order confirmed successfully.
+          headers:
+            ETag:
+              schema:
+                type: string
+              example: '"order-rev-8"'
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The order is not in a state that allows confirmation
+            (e.g. already confirmed, rejected, or cancelled).
+          headers:
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+            X-Platform-Error-Kind:
+              $ref: "#/components/headers/X-Platform-Error-Kind"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                reason: invalid_order_transition
+                localized_message: This order has already been confirmed.
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /merchants/{merchant_id}/orders/{order_id}/rejection:
+    put:
+      operationId: rejectOrder
+      summary: Reject an incoming order
+      description: >
+        Rejects an order in the pending_merchant_confirmation state and
+        transitions it to rejected. The platform notifies the consumer and
+        initiates a refund.
+
+        Allowed only when current status is pending_merchant_confirmation.
+      tags: [Orders]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - $ref: "#/components/parameters/OrderId"
+        - $ref: "#/components/parameters/IfMatchHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectOrderRequest"
+            example:
+              rejection_reason: item_unavailable
+              rejection_note: "Margherita pizza ingredients ran out for tonight."
+      responses:
+        "200":
+          description: Order rejected successfully.
+          headers:
+            ETag:
+              schema:
+                type: string
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The order cannot be rejected in its current state
+            (e.g. already confirmed or cancelled).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                reason: invalid_order_transition
+                localized_message: This order can no longer be rejected.
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /merchants/{merchant_id}/orders/{order_id}/readiness:
+    put:
+      operationId: markOrderReady
+      summary: Notify the platform that an order is ready for courier pickup
+      description: >
+        Transitions the order from confirmed or in_preparation to
+        ready_for_pickup. The platform dispatches a courier.
+
+        The merchant may optionally update estimated_ready_at if the previous
+        estimate needs correction before marking ready.
+
+        Allowed when current status is confirmed or in_preparation.
+      tags: [Orders]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - $ref: "#/components/parameters/OrderId"
+        - $ref: "#/components/parameters/IfMatchHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MarkOrderReadyRequest"
+            example:
+              updated_estimated_ready_at: null
+      responses:
+        "200":
+          description: Order marked as ready for pickup.
+          headers:
+            ETag:
+              schema:
+                type: string
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The order is not in a state that allows readiness notification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                reason: invalid_order_transition
+                localized_message: Only confirmed or in-preparation orders can be marked as ready.
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  # ════════════════════════════════════════════
+  # WEBHOOKS — receive orders via push instead of polling
+  # ════════════════════════════════════════════
+
+  /merchants/{merchant_id}/webhook-subscriptions:
+    get:
+      operationId: listWebhookSubscriptions
+      summary: List webhook subscriptions for the merchant
+      tags: [Webhooks]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/CursorParam"
+      responses:
+        "200":
+          description: Paginated list of webhook subscriptions.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-store
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    required: [subscriptions]
+                    properties:
+                      subscriptions:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/WebhookSubscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+    post:
+      operationId: createWebhookSubscription
+      summary: Register a webhook endpoint to receive order events
+      description: >
+        Creates a new webhook subscription. The platform will POST signed
+        event payloads to target_url when the subscribed events occur.
+
+        The response includes the signing_secret once. Store it securely;
+        it cannot be retrieved again. Use it to verify the
+        X-Platform-Signature-256 header on incoming webhooks (HMAC-SHA256).
+
+        Supported events:
+          order.placed   – a consumer has placed a new order
+          order.cancelled – a confirmed order was cancelled by the consumer or platform
+      tags: [Webhooks]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookSubscriptionRequest"
+            example:
+              target_url: https://merchant.example/platform-webhooks
+              events:
+                - order.placed
+                - order.cancelled
+      responses:
+        "201":
+          description: Webhook subscription created.
+          headers:
+            Location:
+              schema:
+                type: string
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateWebhookSubscriptionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /merchants/{merchant_id}/webhook-subscriptions/{subscription_id}:
+    delete:
+      operationId: deleteWebhookSubscription
+      summary: Remove a webhook subscription
+      description: >
+        Deactivates and deletes the webhook subscription. The platform will
+        stop sending events immediately. DELETE is idempotent; deleting an
+        already-deleted subscription returns 204.
+      tags: [Webhooks]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "204":
+          description: Subscription deleted (or was already absent).
+          headers:
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /merchants/{merchant_id}/webhook-subscriptions/{subscription_id}/secret-rotation:
+    post:
+      operationId: rotateWebhookSigningSecret
+      summary: Rotate the HMAC signing secret for a webhook subscription
+      description: >
+        Generates a new signing secret and invalidates the old one.
+        The new secret is returned once in the response body.
+        Update your webhook handler before rotating to avoid a brief
+        verification gap, or implement a grace-period by accepting both
+        old and new secrets for a short window.
+      tags: [Webhooks]
+      parameters:
+        - $ref: "#/components/parameters/MerchantId"
+        - $ref: "#/components/parameters/SubscriptionId"
+      responses:
+        "200":
+          description: Secret rotated. New secret shown once.
+          headers:
+            X-Platform-Request-Id:
+              $ref: "#/components/headers/X-Platform-Request-Id"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signing_secret]
+                properties:
+                  signing_secret:
+                    type: string
+                    description: New HMAC-SHA256 signing secret. Store securely.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+# ──────────────────────────────────────────────
+# TAGS
+# ──────────────────────────────────────────────
+tags:
+  - name: Catalog
+    description: >
+      Upload and manage the merchant's item catalog.
+      Uploads are asynchronous; poll the upload status resource to confirm completion.
+  - name: Orders
+    description: >
+      Incoming order management.
+      Poll GET /orders or subscribe to webhooks for new orders.
+      Use the confirmation, rejection, and readiness sub-resources to drive
+      the order through its lifecycle.
+  - name: Webhooks
+    description: >
+      Push-based event delivery so merchants do not need to poll for new orders.
+      The platform signs each POST with HMAC-SHA256 using the subscription's
+      signing secret (X-Platform-Signature-256 header).
